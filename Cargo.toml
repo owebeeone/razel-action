@@ -6,9 +6,7 @@ description = "razelv4 execution node-kind: ACTION (run a declared action via a 
 
 [dependencies]
 razel-core = { path = "../razel-core", version = "0.1.0" }
-razel-ids = { path = "../razel-ids", version = "0.1.0" }
 razel-engine-api = { path = "../razel-engine-api", version = "0.1.0" }
-razel-os-api = { path = "../razel-os-api", version = "0.1.0" }
 razel-bzl-api = { path = "../razel-bzl-api", version = "0.1.0" }
 razel-exec-api = { path = "../razel-exec-api", version = "0.1.0" }
 
