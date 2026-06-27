@@ -25,6 +25,7 @@
 //! shared `razel_exec_api::validate_outputs` — never a silent empty value, and independent of the exit code
 //! (ADR-0012). A malformed key decodes to a typed `Error`, never a panic on valid-shaped input.
 
+use razel_bzl_api::ActionTemplate;
 use razel_core::{Digest, Error, Key, KindId, NodeKey, Value, ValuePolicy};
 use razel_engine_api::{ComputeResult, DemandContext, DemandEngine, NodeFunction};
 use razel_exec_api::{validate_outputs, ExecError, InputArtifact, SpawnRequest, SpawnResult, SpawnStrategy};
@@ -334,6 +335,14 @@ impl NodeFunction for ActionFn {
 /// mirrors `register_source_kinds(engine, sys, root)`. `razel-action` never names a concrete strategy.
 pub fn register_action_kinds(engine: &mut dyn DemandEngine, strategy: Arc<dyn SpawnStrategy>) {
     engine.register(ACTION, Box::new(ActionFn::new(strategy)));
+}
+
+/// Convert an analysis-emitted [`ActionTemplate`] into an executable [`ActionKey`]. The template carries input
+/// PATHS; the caller resolves each to content (the artifact-materializer seam — deferred; pass `[]` for the
+/// input-free actions of the minimal cut). Pure: the key is a function of the template + the resolved bytes, so
+/// equal (template, inputs) → equal key → engine cutoff.
+pub fn action_key_from_template(t: &ActionTemplate, inputs: Vec<ActionInput>) -> ActionKey {
+    ActionKey::new(t.mnemonic.clone(), t.argv.clone(), t.env.iter().cloned().collect(), inputs, t.outputs.clone())
 }
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────────────────
