@@ -57,7 +57,8 @@ pub struct ActionKey {
     pub argv: Vec<String>,
     /// Declared env only (REQ-PATHENV-008) — `BTreeMap` is sorted, so the key is order-insensitive in env.
     pub env: BTreeMap<String, String>,
-    /// Sorted by path in `new`; each input contributes its content DIGEST to the key (not raw bytes).
+    /// Sorted by path in `new`; each input's `(path, content bytes)` is INLINED in the key (lossless minimal
+    /// cut — not a digest; see the crate-level note), so the key changes when an input's bytes change.
     pub inputs: Vec<ActionInput>,
     /// Declared outputs the strategy MUST produce (sorted, deduped in `new`).
     pub outputs: Vec<String>,
@@ -77,8 +78,8 @@ impl ActionKey {
         ActionKey { mnemonic: mnemonic.into(), argv, env, inputs, outputs }
     }
 
-    /// The `SpawnRequest` this action runs as. The bytes the strategy needs travel here; the key (above) used the
-    /// digests. Built fresh from the key so the request is a pure function of the key (no hidden state).
+    /// The `SpawnRequest` this action runs as — the bytes the strategy needs. The key (above) INLINES these same
+    /// bytes losslessly, so this is rebuilt straight from the key (a pure function of the key, no hidden state).
     fn to_request(&self) -> SpawnRequest {
         SpawnRequest::new(
             self.mnemonic.clone(),
@@ -90,7 +91,7 @@ impl ActionKey {
     }
 }
 
-// ───── canonical encode: length-framed so no field can bleed into the next; digests, not bytes, for inputs ─────
+// ───── canonical encode: length-framed so no field can bleed into the next; input content bytes INLINED (lossless) ─────
 fn enc_str(b: &mut Vec<u8>, s: &str) {
     b.extend_from_slice(&(s.len() as u64).to_be_bytes());
     b.extend_from_slice(s.as_bytes());
@@ -199,11 +200,13 @@ impl<'a> Cur<'a> {
         Error::Invalid { what: "ACTION key".into(), detail: detail.into() }
     }
     fn take(&mut self, n: usize) -> Result<&'a [u8], Error> {
-        if self.i + n > self.b.len() {
+        // checked_add: a malformed key with a huge length must be a typed error, never an overflow panic.
+        let end = self.i.checked_add(n).ok_or_else(|| Self::err("length overflow"))?;
+        if end > self.b.len() {
             return Err(Self::err("truncated"));
         }
-        let s = &self.b[self.i..self.i + n];
-        self.i += n;
+        let s = &self.b[self.i..end];
+        self.i = end;
         Ok(s)
     }
     fn u64(&mut self) -> Result<u64, Error> {
@@ -264,7 +267,9 @@ fn decode_action_key(bytes: &[u8]) -> Result<ActionKey, Error> {
 fn map_exec(e: ExecError) -> Error {
     match e {
         ExecError::OutputNotProduced { mnemonic, path } => {
-            Error::InputMissing { what: "declared action output".into(), detail: format!("{mnemonic}: {path}") }
+            // A declared OUTPUT the action didn't produce is an Invalid action result (per the crate spec) —
+            // NOT InputMissing, which razel-core reserves for a missing declared INPUT at a read boundary.
+            Error::Invalid { what: "declared action output not produced".into(), detail: format!("{mnemonic}: {path}") }
         }
         ExecError::MissingInput { mnemonic, path } => {
             Error::InputMissing { what: "declared action input".into(), detail: format!("{mnemonic}: {path}") }
@@ -449,7 +454,7 @@ mod tests {
         let key = akey("Touch", &["c"], &[], &["out/keep", "out/missing"]);
         let strategy = Arc::new(DroppingStrategy { drop: "out/missing".into() });
         match run(strategy, &key) {
-            ComputeResult::Error(Error::InputMissing { .. }) => {}
+            ComputeResult::Error(Error::Invalid { .. }) => {}
             other => panic!("a missing declared output must fail closed, got {:?}", debug_result(&other)),
         }
     }
@@ -467,6 +472,9 @@ mod tests {
     fn malformed_key_is_fail_closed() {
         assert!(matches!(decode_action_key(b"\x00\x00"), Err(Error::Invalid { .. })),
             "a truncated/garbage key must be a typed Invalid, never a panic");
+        // A length field of u64::MAX must be a typed error, never an arithmetic-overflow panic (checked_add).
+        assert!(matches!(decode_action_key(&[0xff; 8]), Err(Error::Invalid { .. })),
+            "a huge declared length must fail closed, never panic on overflow");
     }
 
     // small helper so panics in tests show the variant without ActionValue needing Debug on the trait object
