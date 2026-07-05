@@ -373,6 +373,7 @@ mod tests {
         fn request_group(&mut self, keys: &[NodeKey]) -> Vec<Demand> {
             keys.iter().map(|_| Demand::Missing).collect()
         }
+        fn register_dep(&mut self, _k: &NodeKey) {}
     }
 
     fn akey(mnemonic: &str, argv: &[&str], inputs: &[(&str, &[u8])], outputs: &[&str]) -> ActionKey {
