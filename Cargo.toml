@@ -2,28 +2,59 @@
 name = "razel-action"
 version = "0.1.0"
 edition = "2021"
-description = "razelv4 execution node-kind: ACTION (run a declared action via a SpawnStrategy, content-keyed) (role: logic)."
+description = "razelv4 execution node-kinds: ACTION (positional GeneratingActionKey) + ARTIFACT + TARGET_COMPLETION over the InputResolver/BlobStore/SpawnStrategy seams (role: logic)."
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 razel-core = { path = "../razel-core", version = "0.1.0" }
+razel-ids = { path = "../razel-ids", version = "0.1.0" }
 razel-engine-api = { path = "../razel-engine-api", version = "0.1.0" }
+razel-os-api = { path = "../razel-os-api", version = "0.1.0" }
 razel-bzl-api = { path = "../razel-bzl-api", version = "0.1.0" }
 razel-exec-api = { path = "../razel-exec-api", version = "0.1.0" }
+# The lockdown §3 down-edge: ConfiguredTargetKey in the positional ACTION key + the ConfiguredTarget
+# downcast (matches the manifest's action-graph upstreams). razel-source/razel-os-api/razel-ids supply the
+# ARTIFACT Source arm — the FILE invalidation edge + sys.read bytes (decision G, the razel-load pattern).
+razel-analysis = { path = "../razel-analysis", version = "0.1.0" }
+razel-source = { path = "../razel-source", version = "0.1.0" }
 
 [features]
-# RED-FIRST: drop the input content from the ACTION content key → an input edit yields the SAME key, so the
-# cache wrongly re-uses the stale output (incrementality breaks). Turns
+# RED-FIRST: drop the input content from the 8-dim fingerprint → an input edit yields the SAME fingerprint
+# (a wrong-cache-hit once the action cache keys on it). Turns
 # `action_key_changes_with_inputs_argv_env_and_is_stable_otherwise` RED (the input-change assertion fails).
 mutant_action_ignores_inputs_in_key = []
 # RED-FIRST: compute() fabricates a hardcoded output instead of calling the injected SpawnStrategy → the seam is
 # bypassed. Turns `action_re_run_uses_strategy_not_a_fabricated_output` (and the headline execute test) RED.
 mutant_exec_hardcodes_output = []
-# RED-FIRST (ADR-0012 widening): drop the `tools` frame from the ACTION key → two actions differing ONLY in a
+# RED-FIRST (ADR-0012 widening): drop the `tools` frame from the fingerprint → two actions differing ONLY in a
 # tool (a gcc-12 → gcc-13 version swap) COLLIDE and the cache serves the WRONG output. Turns
 # `action_key_changes_for_tools` RED.
 mutant_action_key_drops_tools = []
 # RED-FIRST (ADR-0012 widening): drop the exec dims (exec_platform presence tag + exec_properties frame) from
-# the ACTION key → the "same" action on a different exec platform / with different exec_properties keys
+# the fingerprint → the "same" action on a different exec platform / with different exec_properties keys
 # identically. Turns `action_key_changes_for_exec` RED.
 mutant_action_key_drops_exec_dims = []
+# RED-FIRST (artifact-model lockdown §4, the HEADLINE's driver): TARGET_COMPLETION publishes its sentinel
+# WITHOUT requesting the output ARTIFACT group → nothing builds as a consequence of completion. Turns
+# `action_runs_as_graph_consequence_of_target_output` (integration) and
+# `target_completion_requests_ct_then_its_artifact_group` (unit) RED.
+mutant_completion_skips_artifact_demand = []
+# RED-FIRST (artifact-model lockdown §4): ARTIFACT yields a digest WITHOUT requesting its producer (a
+# fabricated projection). Turns `artifact_is_a_pure_projection_of_its_producer` (unit) and
+# `derived_input_materializes_from_producer` (integration) RED.
+mutant_artifact_projection_fabricates_digest = []
+# RED-FIRST (artifact-model lockdown §4): ACTION materializes inputs from a node-local memo instead of
+# re-requesting the ARTIFACT nodes — the edges are not re-declared, the engine drops them, and an input edit
+# invalidates nothing (stale bytes). Turns `input_edit_reruns_downstream_action` (integration) RED.
+mutant_action_skips_input_artifact_edges = []
+# RED-FIRST (artifact-model lockdown §4): a duplicate declared exec-path across a CT's actions is silently
+# resolved last-writer-wins instead of a typed Conflict. Turns `duplicate_output_conflict_fail_closed`
+# (unit + integration) RED.
+mutant_dup_output_last_writer_wins = []
+# RED-FIRST (artifact-model lockdown §0/§4, the Absorb shape): an unresolvable input form is absorbed into a
+# fabricated EMPTY input (no edge) instead of a typed error. Turns `unresolvable_input_fails_closed`
+# (unit + integration) RED.
+mutant_input_resolver_absorbs_unknown = []
+# RED-FIRST (artifact-model lockdown §2, the BlobStore fail-closed law): a missing digest comes back as
+# EMPTY BYTES instead of a typed NotFound. Turns `blobstore_missing_digest_fails_closed` (unit) RED.
+mutant_blobstore_get_defaults = []
