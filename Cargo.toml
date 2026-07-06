@@ -19,3 +19,11 @@ mutant_action_ignores_inputs_in_key = []
 # RED-FIRST: compute() fabricates a hardcoded output instead of calling the injected SpawnStrategy → the seam is
 # bypassed. Turns `action_re_run_uses_strategy_not_a_fabricated_output` (and the headline execute test) RED.
 mutant_exec_hardcodes_output = []
+# RED-FIRST (ADR-0012 widening): drop the `tools` frame from the ACTION key → two actions differing ONLY in a
+# tool (a gcc-12 → gcc-13 version swap) COLLIDE and the cache serves the WRONG output. Turns
+# `action_key_changes_for_tools` RED.
+mutant_action_key_drops_tools = []
+# RED-FIRST (ADR-0012 widening): drop the exec dims (exec_platform presence tag + exec_properties frame) from
+# the ACTION key → the "same" action on a different exec platform / with different exec_properties keys
+# identically. Turns `action_key_changes_for_exec` RED.
+mutant_action_key_drops_exec_dims = []
