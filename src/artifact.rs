@@ -314,9 +314,13 @@ pub trait InputResolver: Send + Sync {
     fn resolve(&self, owner: &ConfiguredTargetKey, ct: &ConfiguredTarget, input_path: &str) -> Result<ArtifactRef, Error>;
 }
 
-/// The v1 resolver policy (lockdown §3): a path matching a sibling action's declared output →
-/// `Derived{own ct, idx}`; any other root-relative forward path → `Source` (fail-closed at the `FILE`
-/// node); unknown forms (empty, absolute, up-level) → typed `Unsupported`.
+/// The v1 resolver policy (lockdown §3, extended by the files-chaining slice): a path matching a sibling
+/// action's declared output → `Derived{own ct, idx}`; a path matching a DIRECT dep's declared output (the
+/// owner CT's `dep_outputs` chaining map, stamped at analysis from the deps' `{providers, actions}`) →
+/// `Derived{producer ct, idx}` — "my inputs are my dep's outputs", the Bazel providers-carry-DerivedArtifacts
+/// shape with the map riding the CT VALUE (no key reshape); any other root-relative forward path → `Source`
+/// (fail-closed at the `FILE` node: a path that is neither a source file on disk nor a mapped output is a
+/// typed `NotFound` there, never absorbed); unknown forms (empty, absolute, up-level) → typed `Unsupported`.
 pub struct SameTargetOrSourceResolver;
 impl InputResolver for SameTargetOrSourceResolver {
     fn resolve(&self, owner: &ConfiguredTargetKey, ct: &ConfiguredTarget, input_path: &str) -> Result<ArtifactRef, Error> {
@@ -329,6 +333,8 @@ impl InputResolver for SameTargetOrSourceResolver {
                 ),
             });
         }
+        // (1) a sibling action's declared output (same target — the pre-chaining v1 policy, kept first:
+        // within one target the declaring action is the authority).
         for (idx, tmpl) in ct.actions.iter().enumerate() {
             if tmpl.outputs.iter().any(|o| o == input_path) {
                 return Ok(ArtifactRef {
@@ -339,6 +345,18 @@ impl InputResolver for SameTargetOrSourceResolver {
                     }),
                 });
             }
+        }
+        // (2) a DIRECT dep's declared output — the files-chaining map (analysis stamped exec_path →
+        // {producer CT, action index}; the producer CT key carries the threaded configuration, so the
+        // Derived ref names the exact analyzed dep node the engine already holds).
+        if let Some(d) = ct.dep_outputs.iter().find(|d| d.exec_path == input_path) {
+            return Ok(ArtifactRef {
+                exec_path: input_path.to_string(),
+                producer: ArtifactProducer::Derived(GeneratingActionKey {
+                    owner: d.producer_ct.clone(),
+                    action_index: d.action_index,
+                }),
+            });
         }
         Ok(ArtifactRef { exec_path: input_path.to_string(), producer: ArtifactProducer::Source })
     }
@@ -661,7 +679,7 @@ mod tests {
         }
     }
     fn ct(actions: Vec<ActionTemplate>) -> ConfiguredTarget {
-        ConfiguredTarget { providers: Vec::new(), actions }
+        ConfiguredTarget { providers: Vec::new(), actions, dep_outputs: Vec::new() }
     }
     fn gak(pkg: &str, name: &str, idx: u32) -> GeneratingActionKey {
         GeneratingActionKey { owner: owner(pkg, name), action_index: idx }
@@ -795,6 +813,38 @@ mod tests {
         // anything else root-relative → Source.
         let src = r.resolve(&o, &c, "app/in.txt").unwrap();
         assert_eq!(src.producer, ArtifactProducer::Source);
+    }
+
+    #[test]
+    fn resolver_maps_dep_output_to_producer_via_chaining_map() {
+        // The files-chaining slice: an input path matching a DIRECT dep's declared output (the owner CT's
+        // dep_outputs map, stamped at analysis) resolves to Derived{producer_ct, idx} — the dep's action,
+        // NOT the owner's, and NOT Source. The producer CT carries its threaded configuration.
+        use razel_analysis::DepOutput;
+        let o = owner("app", "bin");
+        let dep_ct = ConfiguredTargetKey {
+            package: "app".into(),
+            name: "lib".into(),
+            configuration: Some("host".into()),
+            exec_platform: None,
+            rule_transition: None,
+        };
+        let mut c = ct(vec![tmpl("Link", &["app/main.rs", "app/liblib.rlib"], &["app/bin"])]);
+        c.dep_outputs =
+            vec![DepOutput { exec_path: "app/liblib.rlib".into(), producer_ct: dep_ct.clone(), action_index: 0 }];
+        let r = SameTargetOrSourceResolver;
+        // the dep's rlib → Derived on the DEP's generating action (config-carrying owner).
+        let rlib = r.resolve(&o, &c, "app/liblib.rlib").unwrap();
+        assert_eq!(
+            rlib.producer,
+            ArtifactProducer::Derived(GeneratingActionKey { owner: dep_ct, action_index: 0 }),
+            "a dep output must resolve to ITS producing action via the chaining map"
+        );
+        // the source file still → Source (the map does not swallow non-matching paths).
+        assert_eq!(r.resolve(&o, &c, "app/main.rs").unwrap().producer, ArtifactProducer::Source);
+        // a SIBLING output shadows the map only for paths the owner itself declares — the owner's own
+        // output stays owner-derived.
+        assert_eq!(r.resolve(&o, &c, "app/bin").unwrap().producer, ArtifactProducer::Derived(gak("app", "bin", 0)));
     }
 
     #[test]
