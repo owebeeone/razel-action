@@ -1,0 +1,32 @@
+# razel-action/BUILD.bazel — razel building its OWN action/artifact execution crate (part of razel-daemon's
+# fat closure). RECENTLY SPLIT: the artifact subsystem is a nested module dir (src/artifact/*.rs) preserved in
+# the exec root; `artifact/tests.rs` + `artifact/testctx.rs` are #[cfg(test)] (staged, not in the rlib).
+# Direct deps: razel-core, razel-ids, razel-engine-api, razel-os-api, razel-bzl-api, razel-exec-api,
+# razel-analysis, razel-source.
+load("//rules/rust:rust.bzl", "rust_library")
+
+rust_library(
+    name = "razel_action",
+    srcs = [
+        "src/lib.rs",  # crate root (listed first)
+        "src/artifact/codec.rs",
+        "src/artifact/keys.rs",
+        "src/artifact/mod.rs",
+        "src/artifact/nodes.rs",
+        "src/artifact/seams.rs",
+        "src/artifact/testctx.rs",
+        "src/artifact/tests.rs",
+        "src/fingerprint.rs",
+    ],
+    deps = [
+        "//razel-core:razel_core",
+        "//razel-ids:razel_ids",
+        "//razel-engine-api:razel_engine_api",
+        "//razel-os-api:razel_os_api",
+        "//razel-bzl-api:razel_bzl_api",
+        "//razel-exec-api:razel_exec_api",
+        "//razel-analysis:razel_analysis",
+        "//razel-source:razel_source",
+    ],
+    visibility = ["//visibility:public"],  # consumed cross-package (host)
+)

@@ -33,6 +33,7 @@ use razel_core::{Digest, Error, KindId, NodeKey, Value, ValuePolicy};
 use razel_engine_api::{ComputeResult, Demand, DemandContext, DemandEngine, NodeFunction};
 use razel_exec_api::{validate_outputs, ExecError, SpawnResult, SpawnStrategy};
 use razel_os_api::{HostPath, System};
+use razel_source::ExternalRepos;
 use std::any::Any;
 #[cfg(feature = "mutant_action_skips_input_artifact_edges")]
 use std::collections::HashMap;
@@ -336,9 +337,10 @@ pub fn register_action_kinds(
     blobs: Arc<dyn BlobStore>,
     sys: Arc<dyn System>,
     root: HostPath,
+    repos: ExternalRepos,
 ) {
     engine.register(ACTION, Box::new(ActionFn::new(strategy, resolver, blobs.clone())));
-    engine.register(ARTIFACT, Box::new(ArtifactFn::new(blobs, sys, root)));
+    engine.register(ARTIFACT, Box::new(ArtifactFn::new_with_repos(blobs, sys, root, repos)));
     engine.register(TARGET_COMPLETION, Box::new(TargetCompletionFn));
 }
 
@@ -400,7 +402,7 @@ mod tests {
         // strategy, and digests the strategy's bytes. The test constructs NO content node-key.
         let ex = exam(Arc::new(FakeStrategy));
         let o = owner("app", "t");
-        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], actions: vec![template("Touch", &["cat", "in"], &["in"], &["out/o"])] };
+        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], visibility: vec![], actions: vec![template("Touch", &["cat", "in"], &["in"], &["out/o"])] };
         let in_digest = ex.blobs.put(b"hello");
         let in_ref = ArtifactRef { exec_path: "in".into(), producer: ArtifactProducer::Source };
         let mut ctx = MapCtx::new()
@@ -439,7 +441,7 @@ mod tests {
             }
             other => panic!("expected Missing on the CT, got {:?}", debug_result(&other)),
         }
-        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], actions: vec![template("M", &["x"], &["in"], &["o"])] };
+        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], visibility: vec![], actions: vec![template("M", &["x"], &["in"], &["o"])] };
         let in_ref = ArtifactRef { exec_path: "in".into(), producer: ArtifactProducer::Source };
         let mut with_ct = MapCtx::new().serve(&owner("app", "t"), ct);
         match ex.f.compute(&key, &mut with_ct) {
@@ -454,7 +456,7 @@ mod tests {
     #[test]
     fn action_index_out_of_range_fails_closed() {
         let ex = exam(Arc::new(FakeStrategy));
-        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], actions: vec![template("M", &["x"], &[], &["o"])] };
+        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], visibility: vec![], actions: vec![template("M", &["x"], &[], &["o"])] };
         let mut ctx = MapCtx::new().serve(&owner("app", "t"), ct);
         match ex.f.compute(&NodeKey::from_key(&gak("app", "t", 5)), &mut ctx) {
             ComputeResult::Error(Error::Invalid { .. }) => {}
@@ -468,7 +470,7 @@ mod tests {
         // NEVER empty content or a skipped edge. `mutant_input_resolver_absorbs_unknown` regresses this
         // (the action would run with a fabricated empty input and return Ready).
         let ex = exam(Arc::new(FakeStrategy));
-        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], actions: vec![template("M", &["x"], &["/etc/passwd"], &["o"])] };
+        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], visibility: vec![], actions: vec![template("M", &["x"], &["/etc/passwd"], &["o"])] };
         let mut ctx = MapCtx::new().serve(&owner("app", "t"), ct);
         match ex.f.compute(&NodeKey::from_key(&gak("app", "t", 0)), &mut ctx) {
             ComputeResult::Error(Error::Unsupported { .. }) => {}
@@ -481,7 +483,7 @@ mod tests {
         // The ARTIFACT names a digest the BlobStore never held → blobs.get is a typed NotFound surfacing
         // from the ACTION node — never empty input bytes.
         let ex = exam(Arc::new(FakeStrategy));
-        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], actions: vec![template("M", &["x"], &["in"], &["o"])] };
+        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], visibility: vec![], actions: vec![template("M", &["x"], &["in"], &["o"])] };
         let in_ref = ArtifactRef { exec_path: "in".into(), producer: ArtifactProducer::Source };
         let mut ctx = MapCtx::new()
             .serve(&owner("app", "t"), ct)
@@ -497,7 +499,7 @@ mod tests {
         // mutant_exec_hardcodes_output regresses this: the value's digest would be Digest::of(b"HARDCODED"),
         // not the strategy's content → assertion fails (red under the mutant, green otherwise).
         let ex = exam(Arc::new(FakeStrategy));
-        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], actions: vec![template("M", &["x"], &[], &["o"])] };
+        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], visibility: vec![], actions: vec![template("M", &["x"], &[], &["o"])] };
         let mut ctx = MapCtx::new().serve(&owner("app", "t"), ct);
         let val = match ex.f.compute(&NodeKey::from_key(&gak("app", "t", 0)), &mut ctx) {
             ComputeResult::Ready(v) => v,
@@ -515,7 +517,7 @@ mod tests {
         // A strategy that drops a required output → the node fails closed (never an empty/partial value), even
         // though the strategy exited zero.
         let ex = exam(Arc::new(DroppingStrategy { drop: "out/missing".into() }));
-        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], actions: vec![template("Touch", &["c"], &[], &["out/keep", "out/missing"])] };
+        let ct = ConfiguredTarget { providers: vec![], dep_outputs: vec![], visibility: vec![], actions: vec![template("Touch", &["c"], &[], &["out/keep", "out/missing"])] };
         let mut ctx = MapCtx::new().serve(&owner("app", "t"), ct);
         match ex.f.compute(&NodeKey::from_key(&gak("app", "t", 0)), &mut ctx) {
             ComputeResult::Error(Error::Invalid { .. }) => {}
